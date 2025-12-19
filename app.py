@@ -51,11 +51,11 @@ def Page():
         }).reset_index()
 
         # 3. 合併醫院與地理
-        df_merged = pd.merge(df_pop_grouped, df_hosp[['鄉鎮', '醫院數']], left_on='區域別', right_on='鄉鎮', how='left').fillna(0)
+        df_merged = pd.merge(df_pop_grouped, df_hosp[['鄉鎮', '合計']], left_on='區域別', right_on='鄉鎮', how='left').fillna(0)
         
         # 計算核心變數
         df_merged['var1'] = df_merged['pop_65plus']
-        df_merged['var2'] = (df_merged['醫院數'] / df_merged['pop_total']) * 10000
+        df_merged['var2'] = (df_merged['合計'] / df_merged['pop_total']) * 10000
 
         gdf_final = gdf.merge(df_merged, left_on='townname', right_on='區域別')
 
