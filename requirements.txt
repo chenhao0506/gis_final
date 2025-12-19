@@ -1,0 +1,6 @@
+pandas
+geopandas
+matplotlib
+numpy
+requests
+solara
