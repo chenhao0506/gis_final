@@ -134,12 +134,12 @@ def Page():
         fig = plt.figure(figsize=(10, 11)) 
         
         # --- Map Position ---
-        ax = fig.add_axes([0.05, 0.25, 0.9, 0.7])
+        ax = fig.add_axes([0.05, 0.3, 0.9, 0.65])
         gdf_final.plot(ax=ax, color=gdf_final['color'], edgecolor='white', linewidth=0.5)
         ax.set_axis_off()
 
         # --- Legend Position ---
-        ax_leg = fig.add_axes([0.08, 0.03, 0.16, 0.16])
+        ax_leg = fig.add_axes([0.15, 0.08, 0.16, 0.16])
         for i in range(1, 4):
             for j in range(1, 4):
                 ax_leg.add_patch(Rectangle((i, j), 1, 1, facecolor=color_matrix[f"{i}{j}"], edgecolor='w'))
