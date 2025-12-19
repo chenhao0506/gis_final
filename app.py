@@ -31,7 +31,7 @@ def Page():
         # 1. 讀取
         gdf = gpd.read_file(TOWNSHIPS_URL)
         df_pop = pd.read_csv(CSV_POPULATION_URL)
-        df_hosp = pd.read_csv(CSV_HOSPITAL_URL)
+        df_hosp = pd.read_csv(CSV_HOSPITAL_URL, encoding = big5)
 
         # 2. 處理人口 (清理逗號並轉數字)
         age_cols = df_pop.columns[2:]
