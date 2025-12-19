@@ -14,16 +14,31 @@ TOWNSHIPS_URL = 'https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/
 CSV_POPULATION_URL = "https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/age_population.csv"
 CSV_HOSPITAL_URL = "https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/113hospital.csv"
 
-# 下載中文字型 (Noto Sans TC)
-FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf"
-FONT_PATH = "NotoSansTC.ttf"
+# --- FONT SETTING: Iansui (芫荽) ---
+# Using the official Google Fonts static URL to ensure the download works
+FONT_URL = "https://github.com/google/fonts/raw/main/ofl/iansui/Iansui-Regular.ttf"
+FONT_PATH = "Iansui-Regular.ttf"
 
-if not os.path.exists(FONT_PATH):
-    r = requests.get(FONT_URL)
-    with open(FONT_PATH, "wb") as f:
-        f.write(r.content)
+def download_font():
+    if not os.path.exists(FONT_PATH):
+        try:
+            print("Downloading font...")
+            r = requests.get(FONT_URL, timeout=10)
+            r.raise_for_status()
+            with open(FONT_PATH, "wb") as f:
+                f.write(r.content)
+            print("Font downloaded successfully.")
+        except Exception as e:
+            print(f"Font download failed: {e}")
 
-font_prop = FontProperties(fname=FONT_PATH)
+# Trigger download
+download_font()
+
+# Use a fallback if font download fails
+if os.path.exists(FONT_PATH):
+    font_prop = FontProperties(fname=FONT_PATH)
+else:
+    font_prop = FontProperties(family="sans-serif")
 
 @solara.component
 def Page():
@@ -108,50 +123,42 @@ def Page():
     color_matrix = {
         '11': '#e8e8e8', '21': '#e4acac', '31': '#c85a5a', 
         '12': '#b0d5df', '22': '#ad9ea5', '32': '#985356', 
-        '13': '#64acbe', '23': '#627f8c', '33': '#574249'  
+        '13': '#64acbe', '23': '#627f8c', '33': '#574249'   
     }
     gdf_final['color'] = gdf_final['bi_class'].map(color_matrix)
 
     with solara.Column(align="center", style={"width": "100%"}):
+        # We can use the font name directly in Markdown/HTML headers via CSS
         solara.Markdown("# 彰化縣：高齡人口與醫療資源雙變量地圖分析")
         
-        fig = plt.figure(figsize=(10, 11)) # Increased height slightly for better spacing
+        fig = plt.figure(figsize=(10, 11)) 
         
         # --- Map Position ---
-        # [left, bottom, width, height] -> bottom=0.2 lifts the map up
-        ax = fig.add_axes([0.05, 0.22, 0.9, 0.75])
+        ax = fig.add_axes([0.05, 0.25, 0.9, 0.7])
         gdf_final.plot(ax=ax, color=gdf_final['color'], edgecolor='white', linewidth=0.5)
         ax.set_axis_off()
 
-        # --- Legend Position: Moved to the very bottom ---
-        # [left, bottom, width, height] -> bottom=0.02 is near the bottom edge
-        ax_leg = fig.add_axes([0.08, 0.02, 0.16, 0.16])
+        # --- Legend Position ---
+        ax_leg = fig.add_axes([0.08, 0.03, 0.16, 0.16])
         for i in range(1, 4):
             for j in range(1, 4):
                 ax_leg.add_patch(Rectangle((i, j), 1, 1, facecolor=color_matrix[f"{i}{j}"], edgecolor='w'))
         
         ax_leg.set_xlim(1, 4); ax_leg.set_ylim(1, 4)
+        
+        # Labels using Iansui font
         ax_leg.set_xticks([1.5, 2.5, 3.5])
-        ax_leg.set_xticklabels(['低', '中', '高'], fontproperties=font_prop, fontsize=8)
+        ax_leg.set_xticklabels(['低', '中', '高'], fontproperties=font_prop, fontsize=15)
         ax_leg.set_yticks([1.5, 2.5, 3.5])
-        ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop, fontsize=8)
+        ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop, fontsize=15)
         
-        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=15)
-        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=15)
+        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=20)
+        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=20)
         
-        # Clean up legend axes
+        # Style cleaning
         for s in ax_leg.spines.values(): s.set_visible(False)
         ax_leg.tick_params(left=False, bottom=False)
 
         solara.FigureMatplotlib(fig)
-        
-        with solara.Card():
-            solara.Markdown("""
-            ### 雙變量分析解讀
-            - **橫軸 (X)**：高齡人口總數 (越高代表該區老化需求大)。
-            - **縱軸 (Y)**：每萬人醫院密度 (越高代表醫療資源相對豐富)。
-            - **深紫色 (33)**：老化程度高且醫療資源豐富。
-            - **深紅色 (31)**：**老化程度高但醫療資源相對稀缺 (需要重點關注區域)**。
-            """)
 
 Page()
