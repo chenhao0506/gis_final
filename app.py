@@ -136,8 +136,8 @@ def Page():
         ax_leg.set_yticks([1.5, 2.5, 3.5])
         ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop, fontsize=8)
         
-        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=9)
-        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=9)
+        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=15)
+        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=15)
         
         # Clean up legend axes
         for s in ax_leg.spines.values(): s.set_visible(False)
