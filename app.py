@@ -131,7 +131,7 @@ def Page():
         ax.set_axis_off()
 
         # 3x3 圖例 (雙變量矩陣)
-        ax_leg = fig.add_axes([0.1, 0.1, 0.2, 0.2])
+        ax_leg = fig.add_axes([0.05, 0.05, 0.18, 0.18])
         for i in range(1, 4):
             for j in range(1, 4):
                 ax_leg.add_patch(Rectangle((i, j), 1, 1, facecolor=color_matrix[f"{i}{j}"], edgecolor='w'))
@@ -139,8 +139,8 @@ def Page():
         ax_leg.set_xlim(1, 4); ax_leg.set_ylim(1, 4)
         ax_leg.set_xticks([1.5, 2.5, 3.5]); ax_leg.set_xticklabels(['低', '中', '高'], fontproperties=font_prop)
         ax_leg.set_yticks([1.5, 2.5, 3.5]); ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop)
-        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=9)
-        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=9)
+        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=10)
+        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=10)
         
         # 美化圖例
         for s in ax_leg.spines.values(): s.set_visible(False)
