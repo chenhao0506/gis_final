@@ -32,24 +32,21 @@ def Page():
             # A. 讀取地理資料
             gdf = gpd.read_file(TOWNSHIPS_URL)
             
-            # B. 讀取醫院資料 (參考您的成功範例：先讀取 raw 再手動 split)
+            # B. 讀取醫院資料
             hosp_raw = pd.read_csv(CSV_HOSPITAL_URL, encoding="big5", header=None)
             df_hosp = hosp_raw[0].str.split(',', expand=True)
             df_hosp.columns = ['town_name', 'total', 'hosp_count', 'clinic_count']
-            # 過濾掉標題列並轉為數字
             df_hosp = df_hosp[df_hosp['town_name'] != '鄉鎮']
             df_hosp['hosp_count'] = pd.to_numeric(df_hosp['hosp_count'], errors='coerce').fillna(0)
 
-            # C. 讀取人口資料 (同樣建議先處理編碼問題)
+            # C. 讀取人口資料
             pop_raw = pd.read_csv(CSV_POPULATION_URL, encoding="big5", header=None)
             df_pop = pop_raw[0].str.split(',', expand=True)
             
-            # 設定人口資料標頭 (第一欄區域別，第二欄性別...)
             pop_header = df_pop.iloc[0].tolist()
             df_pop.columns = pop_header
-            df_pop = df_pop[df_pop.iloc[:, 0] != '區域別'] # 去除標題列
+            df_pop = df_pop[df_pop.iloc[:, 0] != '區域別'] 
             
-            # 清理人口欄位名稱 (去除空格)
             df_pop.columns = [str(c).strip() for c in df_pop.columns]
             df_pop.rename(columns={df_pop.columns[0]: 'area_name'}, inplace=True)
 
@@ -59,7 +56,6 @@ def Page():
                 df_pop[col] = df_pop[col].astype(str).str.replace(',', '').replace(['nan', 'None', ''], '0')
                 df_pop[col] = pd.to_numeric(df_pop[col], errors='coerce').fillna(0)
 
-            # 篩選 65 歲以上 (包含 100 歲以上)
             cols_65plus = [c for c in age_cols if any(str(i) in c for i in range(65, 101)) or '100' in c]
             df_pop['pop_65plus'] = df_pop[cols_65plus].sum(axis=1)
             df_pop['pop_total'] = df_pop[age_cols].sum(axis=1)
@@ -78,17 +74,14 @@ def Page():
                 how='left'
             ).fillna(0)
             
-            # 變數計算
-            df_merged['var1'] = df_merged['pop_65plus'] # 高齡人口數
-            # 醫療密度指標: (醫院數 / 總人口) * 10000
+            df_merged['var1'] = df_merged['pop_65plus']
             df_merged['var2'] = (df_merged['hosp_count'] / (df_merged['pop_total'] + 1)) * 10000
 
             # F. 合併至地理資料
             gdf_final = gdf.merge(df_merged, left_on='townname', right_on='area_name', how='inner')
 
-            # G. 雙變量分級 (3x3 矩陣)
+            # G. 雙變量分級
             def get_bins(series):
-                # 使用 rank(method='first') 確保分組數量平均，避免重複值導致報錯
                 return pd.qcut(series.rank(method='first'), 3, labels=['1', '2', '3'])
 
             gdf_final['v1_bin'] = get_bins(gdf_final['var1'])
@@ -101,7 +94,6 @@ def Page():
             import traceback
             return f"錯誤詳情: {str(e)}\n{traceback.format_exc()}"
 
-    # 使用 solara.use_memo 確保資料只下載與處理一次
     result = solara.use_memo(load_and_process, dependencies=[])
 
     if isinstance(result, str):
@@ -113,36 +105,41 @@ def Page():
     gdf_final = result
 
     # --- 2. 配色與繪圖 ---
-    # 雙變量配色方案 (3x3 矩陣)
     color_matrix = {
-        '11': '#e8e8e8', '21': '#e4acac', '31': '#c85a5a', # 高齡人口少->多 (紅色系)
+        '11': '#e8e8e8', '21': '#e4acac', '31': '#c85a5a', 
         '12': '#b0d5df', '22': '#ad9ea5', '32': '#985356', 
-        '13': '#64acbe', '23': '#627f8c', '33': '#574249'  # 醫院密度低->高 (藍紫色系)
+        '13': '#64acbe', '23': '#627f8c', '33': '#574249'  
     }
     gdf_final['color'] = gdf_final['bi_class'].map(color_matrix)
 
     with solara.Column(align="center", style={"width": "100%"}):
         solara.Markdown("# 彰化縣：高齡人口與醫療資源雙變量地圖分析")
         
-        # 繪圖
-        fig = plt.figure(figsize=(10, 10))
-        ax = fig.add_subplot(111)
+        fig = plt.figure(figsize=(10, 11)) # Increased height slightly for better spacing
+        
+        # --- Map Position ---
+        # [left, bottom, width, height] -> bottom=0.2 lifts the map up
+        ax = fig.add_axes([0.05, 0.22, 0.9, 0.75])
         gdf_final.plot(ax=ax, color=gdf_final['color'], edgecolor='white', linewidth=0.5)
         ax.set_axis_off()
 
-        # 3x3 圖例 (雙變量矩陣)
-        ax_leg = fig.add_axes([0.05, 0.05, 0.18, 0.18])
+        # --- Legend Position: Moved to the very bottom ---
+        # [left, bottom, width, height] -> bottom=0.02 is near the bottom edge
+        ax_leg = fig.add_axes([0.08, 0.02, 0.16, 0.16])
         for i in range(1, 4):
             for j in range(1, 4):
                 ax_leg.add_patch(Rectangle((i, j), 1, 1, facecolor=color_matrix[f"{i}{j}"], edgecolor='w'))
         
         ax_leg.set_xlim(1, 4); ax_leg.set_ylim(1, 4)
-        ax_leg.set_xticks([1.5, 2.5, 3.5]); ax_leg.set_xticklabels(['低', '中', '高'], fontproperties=font_prop)
-        ax_leg.set_yticks([1.5, 2.5, 3.5]); ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop)
-        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=10)
-        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=10)
+        ax_leg.set_xticks([1.5, 2.5, 3.5])
+        ax_leg.set_xticklabels(['低', '中', '高'], fontproperties=font_prop, fontsize=8)
+        ax_leg.set_yticks([1.5, 2.5, 3.5])
+        ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop, fontsize=8)
         
-        # 美化圖例
+        ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop, fontsize=9)
+        ax_leg.set_ylabel('每萬人醫院密度 →', fontproperties=font_prop, fontsize=9)
+        
+        # Clean up legend axes
         for s in ax_leg.spines.values(): s.set_visible(False)
         ax_leg.tick_params(left=False, bottom=False)
 
@@ -152,7 +149,4 @@ def Page():
             solara.Markdown("""
             ### 雙變量分析解讀
             - **橫軸 (X)**：高齡人口總數 (越高代表該區老化需求大)。
-            - **縱軸 (Y)**：每萬人醫院密度 (越高代表醫療資源相對豐富)。
-            - **深紫色 (33)**：老化程度高且醫療資源豐富。
-            - **深紅色 (31)**：**老化程度高但醫療資源相對稀缺 (需要重點關注區域)**。
-            """)
+            - **縱軸 (Y)**：每萬人醫院密度 (越高
