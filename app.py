@@ -94,7 +94,7 @@ def Page():
                 solara.Error("資料合併後為空，請檢查 GeoJSON 的 'townname' 與 CSV 的區域名稱是否一致。")
             else:
                 # 初始化地圖，設置 basemap=None 移除 OSM 底圖
-                m = leafmap.Map(center=[23.98, 120.53], zoom=10, basemap=None)
+                m = leafmap.Map(center=[23.98, 120.53], zoom=10)
                 
                 # 將 GeoDataFrame 轉為 GeoJSON 格式
                 geo_data = result.__geo_interface__
