@@ -6,3 +6,4 @@ requests
 solara
 plotly
 pyogrio
+anywidget
