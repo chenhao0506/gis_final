@@ -1,6 +1,7 @@
 import pandas as pd
 import geopandas as gpd
-import leafmap.solara_map as leafmap
+import leafmap
+import leafmap.leafmap as leafmap
 import solara
 import os
 import requests
