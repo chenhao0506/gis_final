@@ -106,4 +106,4 @@ app.layout = html.Div(style={'textAlign': 'center', 'fontFamily': 'sans-serif'},
 ])
 
 if __name__ == '__main__':
-    app.run_server(debug=False, host='0.0.0.0', port=7860)
+    app.run(debug=False, host='0.0.0.0', port=7860)
