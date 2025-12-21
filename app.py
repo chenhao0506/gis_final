@@ -6,16 +6,27 @@ import os
 import requests
 import io
 import base64
-from dash import Dash, html, dcc, Input, Output, State, callback
+from dash import Dash, html, dcc, Input, Output, State
 from matplotlib.patches import Rectangle
 from matplotlib.font_manager import FontProperties
 
-# --- 1. Data Sources & Font Setup ---
+# -----------------------------
+# 1. Data Sources & Font Setup
+# -----------------------------
 TOWNSHIPS_URL = 'https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/changhua.geojson'
 CSV_POPULATION_URL = "https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/age_population.csv"
 CSV_DOCTOR_URL = "https://raw.githubusercontent.com/chenhao0506/gis_final/main/changhua_doctors_per_10000.csv"
+
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/iansui/Iansui-Regular.ttf"
 FONT_PATH = "Iansui-Regular.ttf"
+
+MED_THRESHOLDS = {
+    "low": 6,
+    "mid": 10
+}
+
+NEAR_THRESHOLD = 1.5  # 接近下一級即提前變色
+
 
 def download_font():
     if not os.path.exists(FONT_PATH):
@@ -23,14 +34,20 @@ def download_font():
             r = requests.get(FONT_URL, timeout=10)
             with open(FONT_PATH, "wb") as f:
                 f.write(r.content)
-        except: pass
+        except:
+            pass
+
 
 download_font()
-font_prop = FontProperties(fname=FONT_PATH) if os.path.exists(FONT_PATH) else FontProperties(family="sans-serif")
+font_prop = FontProperties(fname=FONT_PATH) if os.path.exists(FONT_PATH) else FontProperties()
 
-# --- 2. Data Loading (Memoized Logic) ---
+
+# -----------------------------
+# 2. Load Base Data
+# -----------------------------
 def load_base_data():
     gdf = gpd.read_file(TOWNSHIPS_URL)
+
     df_doc = pd.read_csv(CSV_DOCTOR_URL)
     df_doc = df_doc[df_doc['區域'] != '總計'][['區域', '總計']]
     df_doc.columns = ['town_name', 'doctor_per_10k']
@@ -38,7 +55,7 @@ def load_base_data():
 
     pop_raw = pd.read_csv(CSV_POPULATION_URL, encoding="big5", header=None)
     df_pop = pop_raw[0].str.split(',', expand=True)
-    df_pop.columns = [str(c).strip() for c in df_pop.iloc[0]]
+    df_pop.columns = df_pop.iloc[0]
     df_pop = df_pop[df_pop.iloc[:, 0] != '區域別']
     df_pop.rename(columns={df_pop.columns[0]: 'area_name'}, inplace=True)
 
@@ -46,26 +63,41 @@ def load_base_data():
     for col in age_cols:
         df_pop[col] = pd.to_numeric(df_pop[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
 
-    cols_65plus = [c for c in age_cols if any(str(i) in c for i in range(65, 101)) or '100' in c]
+    cols_65plus = [c for c in age_cols if any(str(i) in c for i in range(65, 101))]
     df_pop['pop_65plus'] = df_pop[cols_65plus].sum(axis=1)
-    df_pop_grouped = df_pop.groupby('area_name')['pop_65plus'].sum().reset_index()
 
-    df_merged = pd.merge(df_pop_grouped, df_doc, left_on='area_name', right_on='town_name', how='inner')
-    
-    # Calculate BASE bins (to keep thresholds consistent)
-    df_merged['v1_bin'] = pd.qcut(df_merged['pop_65plus'].rank(method='first'), 3, labels=['1', '2', '3'])
-    # We store the rank thresholds for doctor density
-    return gdf, df_merged
+    df_pop = df_pop.groupby('area_name')['pop_65plus'].sum().reset_index()
+
+    df = pd.merge(df_pop, df_doc, left_on='area_name', right_on='town_name', how='inner')
+
+    # 結構性分級（固定）
+    df['v1_bin'] = pd.qcut(df['pop_65plus'].rank(method='first'), 3, labels=['1', '2', '3'])
+
+    return gdf, df
+
 
 GDF_BASE, DF_BASE = load_base_data()
 
-# --- 3. Plotting Function (Now accepts "deployed_vehicles" dict) ---
+
+# -----------------------------
+# 3. Gap Calculation
+# -----------------------------
+def calc_gap(val):
+    if val < MED_THRESHOLDS['low']:
+        return MED_THRESHOLDS['low'] - val, 'low→mid'
+    elif val < MED_THRESHOLDS['mid']:
+        return MED_THRESHOLDS['mid'] - val, 'mid→high'
+    else:
+        return 0, 'top'
+
+
+# -----------------------------
+# 4. Map Generator
+# -----------------------------
 def generate_bivariate_map(vehicles_dict):
     df = DF_BASE.copy()
-    
-    # Apply Policy: 1 vehicle = 1 additional "medical resource unit"
-    # Logic: doctor_sim = original_density + (vehicles / (pop_65plus / 10000))
     df['doctor_sim'] = df['doctor_per_10k']
+
     for town, count in vehicles_dict.items():
         idx = df['area_name'] == town
         if idx.any() and count > 0:
@@ -73,78 +105,97 @@ def generate_bivariate_map(vehicles_dict):
             if pop > 0:
                 df.loc[idx, 'doctor_sim'] += count / (pop / 10000)
 
-    # Re-calculate bins for the Y-axis based on simulated data
-    df['v2_bin'] = pd.qcut(df['doctor_sim'].rank(method='first'), 3, labels=['1', '2', '3'])
+    # 結構性分級（相對）
+    df['v2_bin'] = pd.qcut(
+        df['doctor_sim'].rank(method='first'),
+        3,
+        labels=['1', '2', '3']
+    )
+
     df['bi_class'] = df['v1_bin'].astype(str) + df['v2_bin'].astype(str)
-    
-    gdf_final = GDF_BASE.merge(df, left_on='townname', right_on='area_name', how='inner')
-    
+
+    # Gap 計算
+    df[['gap_to_next', 'gap_stage']] = df['doctor_sim'].apply(
+        lambda x: pd.Series(calc_gap(x))
+    )
+
+    # 視覺提前升級（只影響顏色）
+    def promote(row):
+        if row['gap_to_next'] <= NEAR_THRESHOLD:
+            new_v2 = min(int(row['v2_bin']) + 1, 3)
+            return row['v1_bin'] + str(new_v2)
+        return row['bi_class']
+
+    df['bi_class_vis'] = df.apply(promote, axis=1)
+
+    gdf_final = GDF_BASE.merge(df, left_on='townname', right_on='area_name')
+
     color_matrix = {
-        '11': '#e8e8e8', '21': '#e4acac', '31': '#c85a5a', 
-        '12': '#b0d5df', '22': '#ad9ea5', '32': '#985356', 
-        '13': '#64acbe', '23': '#627f8c', '33': '#574249'   
+        '11': '#e8e8e8', '21': '#e4acac', '31': '#c85a5a',
+        '12': '#b0d5df', '22': '#ad9ea5', '32': '#985356',
+        '13': '#64acbe', '23': '#627f8c', '33': '#574249'
     }
-    gdf_final['color'] = gdf_final['bi_class'].map(color_matrix)
+
+    gdf_final['color'] = gdf_final['bi_class_vis'].map(color_matrix)
 
     fig = plt.figure(figsize=(10, 11))
     ax = fig.add_axes([0.05, 0.25, 0.9, 0.7])
     gdf_final.plot(ax=ax, color=gdf_final['color'], edgecolor='white', linewidth=0.5)
     ax.set_axis_off()
 
-    ax_leg = fig.add_axes([0.15, 0.05, 0.15, 0.15])
+    ax_leg = fig.add_axes([0.15, 0.05, 0.2, 0.2])
     for i in range(1, 4):
         for j in range(1, 4):
             ax_leg.add_patch(Rectangle((i, j), 1, 1, facecolor=color_matrix[f"{i}{j}"], edgecolor='w'))
-    
-    ax_leg.set_xlim(1, 4); ax_leg.set_ylim(1, 4)
-    ax_leg.set_xticks([1.5, 2.5, 3.5]); ax_leg.set_xticklabels(['低', '中', '高'], fontproperties=font_prop)
-    ax_leg.set_yticks([1.5, 2.5, 3.5]); ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop)
+
+    ax_leg.set_xlim(1, 4)
+    ax_leg.set_ylim(1, 4)
+    ax_leg.set_xticks([1.5, 2.5, 3.5])
+    ax_leg.set_yticks([1.5, 2.5, 3.5])
+    ax_leg.set_xticklabels(['低', '中', '高'], fontproperties=font_prop)
+    ax_leg.set_yticklabels(['低', '中', '高'], fontproperties=font_prop)
     ax_leg.set_xlabel('65歲以上人口 →', fontproperties=font_prop)
-    ax_leg.set_ylabel('醫療資源(含補給車) →', fontproperties=font_prop)
+    ax_leg.set_ylabel('醫療資源（含補給車） →', fontproperties=font_prop)
 
     buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches='tight')
     plt.close(fig)
-    data = base64.b64encode(buf.getbuffer()).decode("utf8")
-    return f"data:image/png;base64,{data}"
 
-# --- 4. Dash App Layout ---
+    return f"data:image/png;base64,{base64.b64encode(buf.getbuffer()).decode()}"
+
+
+# -----------------------------
+# 5. Dash App
+# -----------------------------
 app = Dash(__name__)
 
-app.layout = html.Div(style={'display': 'flex', 'flexDirection': 'row', 'padding': '20px', 'fontFamily': 'sans-serif'}, children=[
-    # Left Side: Map
-    html.Div(style={'flex': '3', 'textAlign': 'center'}, children=[
-        html.H1("彰化縣：高齡人口與補給車部署模擬"),
-        html.Img(id='main-map', src=generate_bivariate_map({}), style={'width': '100%', 'maxWidth': '700px'})
+app.layout = html.Div(style={'display': 'flex', 'padding': '20px'}, children=[
+
+    html.Div(style={'flex': 3}, children=[
+        html.H2("彰化縣高齡人口與醫療補給車模擬"),
+        html.Img(id='main-map', src=generate_bivariate_map({}), style={'width': '100%'})
     ]),
-    
-    # Right Side: Controls
-    html.Div(style={'flex': '1', 'backgroundColor': '#f9f9f9', 'padding': '20px', 'borderRadius': '10px', 'marginLeft': '20px'}, children=[
-        html.H3("政策模擬工具"),
-        html.P("選擇鄉鎮："),
+
+    html.Div(style={'flex': 1, 'padding': '20px', 'background': '#f5f5f5'}, children=[
+        html.H4("政策模擬"),
         dcc.Dropdown(
             id='town-dropdown',
             options=[{'label': t, 'value': t} for t in sorted(DF_BASE['area_name'].unique())],
-            placeholder="請選擇鄉鎮..."
+            placeholder="選擇鄉鎮"
         ),
         html.Br(),
-        html.P("部署醫療補給車數量："),
-        html.Div(style={'display': 'flex', 'alignItems': 'center', 'gap': '10px'}, children=[
-            html.Button("➖", id='btn-down', n_clicks=0),
-            html.Span("0", id='vehicle-count', style={'fontSize': '20px', 'fontWeight': 'bold'}),
-            html.Button("➕", id='btn-up', n_clicks=0),
+        html.Div([
+            html.Button("➖", id='btn-down'),
+            html.Span("0", id='vehicle-count', style={'margin': '0 15px'}),
+            html.Button("➕", id='btn-up'),
         ]),
         html.Hr(),
-        html.Div(id='status-text', children="請選擇鄉鎮以開始部署"),
-        
-        # Store for current deployment status: {TownName: Count}
+        html.Div(id='status-text'),
         dcc.Store(id='deployment-store', data={})
     ])
 ])
 
-# --- 5. Callbacks ---
 
-# Callback to update the counter and store
 @app.callback(
     [Output('vehicle-count', 'children'),
      Output('deployment-store', 'data'),
@@ -152,35 +203,44 @@ app.layout = html.Div(style={'display': 'flex', 'flexDirection': 'row', 'padding
     [Input('btn-up', 'n_clicks'),
      Input('btn-down', 'n_clicks'),
      Input('town-dropdown', 'value')],
-    [State('deployment-store', 'data')]
+    State('deployment-store', 'data')
 )
-def update_vehicles(up, down, selected_town, current_store):
-    if not selected_town:
-        return "0", current_store, "請先選擇一個鄉鎮"
-    
-    # Identify which button was clicked by checking trigger
-    from dash import callback_context
-    triggered_id = callback_context.triggered[0]['prop_id'].split('.')[0]
-    
-    current_val = current_store.get(selected_town, 0)
-    
-    if triggered_id == 'btn-up':
-        current_val += 1
-    elif triggered_id == 'btn-down':
-        current_val = max(0, current_val - 1)
-    
-    current_store[selected_town] = current_val
-    
-    status = f"目前為 {selected_town} 部署 {current_val} 輛補給車"
-    return str(current_val), current_store, status
+def update_vehicles(up, down, town, store):
+    if not town:
+        return "0", store, "請先選擇鄉鎮"
 
-# Callback to update the map whenever the store changes
+    from dash import callback_context
+    trigger = callback_context.triggered[0]['prop_id'].split('.')[0]
+
+    val = store.get(town, 0)
+    if trigger == 'btn-up':
+        val += 1
+    elif trigger == 'btn-down':
+        val = max(0, val - 1)
+
+    store[town] = val
+
+    df = DF_BASE.copy()
+    pop = df[df['area_name'] == town]['pop_65plus'].values[0]
+    base = df[df['area_name'] == town]['doctor_per_10k'].values[0]
+    sim = base + (val / (pop / 10000)) if pop > 0 else base
+    gap, stage = calc_gap(sim)
+
+    if gap > 0:
+        text = f"{town} 已部署 {val} 輛補給車 ｜已接近下一級門檻（尚差 {gap:.1f}）"
+    else:
+        text = f"{town} 已達最高醫療資源等級"
+
+    return str(val), store, text
+
+
 @app.callback(
     Output('main-map', 'src'),
     Input('deployment-store', 'data')
 )
-def update_map(store_data):
-    return generate_bivariate_map(store_data)
+def update_map(data):
+    return generate_bivariate_map(data)
+
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=7860)
+    app.run_server(host='0.0.0.0', port=7860, debug=False)
