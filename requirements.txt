@@ -1,6 +1,7 @@
-solara
 pandas
 geopandas
-plotly
+matplotlib
+numpy
+dash
+requests
 pyogrio
-anywidget
