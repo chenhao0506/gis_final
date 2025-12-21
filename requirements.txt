@@ -1,9 +1,6 @@
+solara
 pandas
 geopandas
-matplotlib
-numpy
-requests
-solara
 plotly
 pyogrio
 anywidget

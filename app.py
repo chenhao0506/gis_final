@@ -4,7 +4,7 @@ import plotly.express as px
 import solara
 import json
 
-# --- 1. 資料來源配置 ---
+# --- 1. 配置與資料來源 ---
 TOWNSHIPS_URL = 'https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/changhua.geojson'
 CSV_POPULATION_URL = "https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/age_population.csv"
 CSV_DOCTOR_URL = "https://raw.githubusercontent.com/chenhao0506/gis_final/main/changhua_doctors_per_10000.csv"
@@ -22,6 +22,7 @@ COLOR_MATRIX = {
 
 @solara.component
 def Page():
+    # --- 2. 資料處理 (解決 PerformanceWarning) ---
     def load_and_process(cars_dict):
         try:
             # A. 讀取地理資料
@@ -33,26 +34,29 @@ def Page():
             df_doc = df_doc[['區域', '總計']]
             df_doc.columns = ['town_name', 'base_doctor_rate']
 
-            # C. 讀取人口資料並處理碎片化
-            df_pop_raw = pd.read_csv(CSV_POPULATION_URL, encoding="big5")
-            df_pop = df_pop_raw.copy() # 解決 PerformanceWarning 的關鍵
+            # C. 讀取人口資料 (解決碎片化問題)
+            raw_pop = pd.read_csv(CSV_POPULATION_URL, encoding="big5")
+            # 關鍵：先新增欄位到 dict 再轉換成新的 DF，避免碎片化
+            df_pop = raw_pop.copy()
             df_pop.columns = [str(c).strip() for c in df_pop.columns]
             
             age_cols = [c for c in df_pop.columns if '歲' in c]
             for col in age_cols:
                 df_pop[col] = pd.to_numeric(df_pop[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
             
-            # 計算總人口
-            df_pop['pop_total'] = df_pop[age_cols].sum(axis=1)
+            # 計算總人口與高齡人口
+            pop_total = df_pop[age_cols].sum(axis=1)
             cols_65 = [c for c in age_cols if any(str(i) in c for i in range(65, 101))]
-            df_pop['pop_65plus'] = df_pop[cols_65].sum(axis=1)
+            pop_65plus = df_pop[cols_65].sum(axis=1)
             
-            # 聚合資料
+            # 使用 pd.concat 或直接賦值 (確保只有少數幾次賦值)
+            df_pop = df_pop.assign(pop_total=pop_total, pop_65plus=pop_65plus)
+            
             town_col = df_pop.columns[0]
             pop_stats = df_pop.groupby(town_col).agg({'pop_total':'sum', 'pop_65plus':'sum'}).reset_index()
             pop_stats.columns = ['area_name', 'pop_total', 'pop_65plus']
 
-            # D. 合併與模擬
+            # D. 資料合併與模擬
             df_merged = pd.merge(pop_stats, df_doc, left_on='area_name', right_on='town_name', how='inner')
             
             def calculate_new_rate(row):
@@ -77,14 +81,15 @@ def Page():
 
     result_gdf = solara.use_memo(lambda: load_and_process(extra_cars.value), dependencies=[extra_cars.value])
 
+    # --- 3. UI 與地圖渲染 (解決 ValueError) ---
     with solara.Columns([3, 1]):
         with solara.Column():
             solara.Markdown("### 彰化縣醫療資源動態模擬")
             
             if isinstance(result_gdf, str):
-                solara.Error(f"資料處理錯誤: {result_gdf}")
+                solara.Error(f"資料錯誤: {result_gdf}")
             elif not result_gdf.empty:
-                # 使用更新後的 choropleth_map (不帶 box 尾碼)
+                # 使用 px.choropleth_map (最新推薦寫法)
                 fig = px.choropleth_map(
                     result_gdf,
                     geojson=json.loads(result_gdf.to_json()),
@@ -93,37 +98,47 @@ def Page():
                     color_discrete_map=COLOR_MATRIX,
                     map_style="carto-positron",
                     center={"lat": 23.98, "lon": 120.53},
-                    zoom=9,
-                    hover_name="townname"
+                    zoom=9.3,
+                    opacity=0.7,
+                    hover_name="townname",
+                    custom_data=["townname"]
                 )
                 
-                fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, showlegend=False)
+                # 關鍵修正：移除地圖交互狀態中會導致崩潰的 _derived 屬性
+                fig.update_layout(
+                    margin={"r":0,"t":0,"l":0,"b":0},
+                    showlegend=False,
+                    uirevision='constant' # 保持使用者縮放狀態，防止重新渲染時崩潰
+                )
 
-                # 關鍵：處理點擊事件
                 def handle_click(data):
-                    if data and "points" in data:
-                        idx = data["points"][0]["location"]
-                        selected_town.value = result_gdf.iloc[idx]["townname"]
+                    if data and "points" in data and len(data["points"]) > 0:
+                        # 從 customdata 安全獲取名稱
+                        point_data = data["points"][0]
+                        clicked_town = point_data.get("customdata", [None])[0]
+                        if clicked_town:
+                            selected_town.value = clicked_town
 
                 # 渲染圖表
                 solara.FigurePlotly(fig, on_click=handle_click)
 
-        with solara.Column(style={"padding": "20px"}):
-            solara.Markdown("## 模擬配置面板")
+        with solara.Column(style={"padding": "20px", "background": "#f8f9fa"}):
+            solara.Markdown("## 資源配置面板")
             if selected_town.value:
                 town = selected_town.value
                 current = extra_cars.value.get(town, 0)
                 solara.Info(f"選取區域: {town}")
                 
-                def update(delta):
-                    new = extra_cars.value.copy()
-                    new[town] = max(0, current + delta)
-                    extra_cars.value = new
+                def update_count(delta):
+                    new_state = extra_cars.value.copy()
+                    new_state[town] = max(0, current + delta)
+                    extra_cars.value = new_state
 
-                solara.Button("增加醫療車", on_click=lambda: update(1), color="success")
-                solara.Button("減少醫療車", on_click=lambda: update(-1), color="error")
-                solara.Text(f"已投入：{current} 台")
+                with solara.Row():
+                    solara.Button("增加醫療車", on_click=lambda: update_count(1), color="success")
+                    solara.Button("減少醫療車", on_click=lambda: update_count(-1), color="error")
+                solara.Markdown(f"**目前已投入：{current} 台**")
             else:
-                solara.Warning("請點擊地圖區域")
+                solara.Warning("請點擊地圖區域開始模擬")
 
 Page()
