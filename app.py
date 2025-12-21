@@ -10,9 +10,9 @@ from dash import Dash, html, dcc, Input, Output, State
 from matplotlib.patches import Rectangle
 from matplotlib.font_manager import FontProperties
 
-# -----------------------------
-# 1. Data Sources & Font Setup
-# -----------------------------
+# =============================
+# 1. 基本設定
+# =============================
 TOWNSHIPS_URL = 'https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/changhua.geojson'
 CSV_POPULATION_URL = "https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/age_population.csv"
 CSV_DOCTOR_URL = "https://raw.githubusercontent.com/chenhao0506/gis_final/main/changhua_doctors_per_10000.csv"
@@ -25,9 +25,12 @@ MED_THRESHOLDS = {
     "mid": 10
 }
 
-NEAR_THRESHOLD = 1.5  # 接近下一級即提前變色
+NEAR_THRESHOLD = 1.5   # 距離門檻 <= 1.5 才提前變色
 
 
+# =============================
+# 2. 字型
+# =============================
 def download_font():
     if not os.path.exists(FONT_PATH):
         try:
@@ -37,14 +40,13 @@ def download_font():
         except:
             pass
 
-
 download_font()
 font_prop = FontProperties(fname=FONT_PATH) if os.path.exists(FONT_PATH) else FontProperties()
 
 
-# -----------------------------
-# 2. Load Base Data
-# -----------------------------
+# =============================
+# 3. 載入資料（只一次）
+# =============================
 def load_base_data():
     gdf = gpd.read_file(TOWNSHIPS_URL)
 
@@ -60,8 +62,8 @@ def load_base_data():
     df_pop.rename(columns={df_pop.columns[0]: 'area_name'}, inplace=True)
 
     age_cols = [c for c in df_pop.columns if '歲' in str(c)]
-    for col in age_cols:
-        df_pop[col] = pd.to_numeric(df_pop[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+    for c in age_cols:
+        df_pop[c] = pd.to_numeric(df_pop[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
 
     cols_65plus = [c for c in age_cols if any(str(i) in c for i in range(65, 101))]
     df_pop['pop_65plus'] = df_pop[cols_65plus].sum(axis=1)
@@ -70,7 +72,7 @@ def load_base_data():
 
     df = pd.merge(df_pop, df_doc, left_on='area_name', right_on='town_name', how='inner')
 
-    # 結構性分級（固定）
+    # 高齡人口結構分級（固定）
     df['v1_bin'] = pd.qcut(df['pop_65plus'].rank(method='first'), 3, labels=['1', '2', '3'])
 
     return gdf, df
@@ -79,9 +81,9 @@ def load_base_data():
 GDF_BASE, DF_BASE = load_base_data()
 
 
-# -----------------------------
-# 3. Gap Calculation
-# -----------------------------
+# =============================
+# 4. gap 計算（唯一真實版本）
+# =============================
 def calc_gap(val):
     if val < MED_THRESHOLDS['low']:
         return MED_THRESHOLDS['low'] - val, 'low→mid'
@@ -91,9 +93,9 @@ def calc_gap(val):
         return 0, 'top'
 
 
-# -----------------------------
-# 4. Map Generator
-# -----------------------------
+# =============================
+# 5. 地圖產生
+# =============================
 def generate_bivariate_map(vehicles_dict):
     df = DF_BASE.copy()
     df['doctor_sim'] = df['doctor_per_10k']
@@ -105,7 +107,7 @@ def generate_bivariate_map(vehicles_dict):
             if pop > 0:
                 df.loc[idx, 'doctor_sim'] += count / (pop / 10000)
 
-    # 結構性分級（相對）
+    # 醫療資源結構分級（相對）
     df['v2_bin'] = pd.qcut(
         df['doctor_sim'].rank(method='first'),
         3,
@@ -114,12 +116,12 @@ def generate_bivariate_map(vehicles_dict):
 
     df['bi_class'] = df['v1_bin'].astype(str) + df['v2_bin'].astype(str)
 
-    # Gap 計算
+    # gap（同一套邏輯）
     df[['gap_to_next', 'gap_stage']] = df['doctor_sim'].apply(
         lambda x: pd.Series(calc_gap(x))
     )
 
-    # 視覺提前升級（只影響顏色）
+    # 視覺提前升級
     def promote(row):
         if row['gap_to_next'] <= NEAR_THRESHOLD:
             new_v2 = min(int(row['v2_bin']) + 1, 3)
@@ -146,7 +148,8 @@ def generate_bivariate_map(vehicles_dict):
     ax_leg = fig.add_axes([0.15, 0.05, 0.2, 0.2])
     for i in range(1, 4):
         for j in range(1, 4):
-            ax_leg.add_patch(Rectangle((i, j), 1, 1, facecolor=color_matrix[f"{i}{j}"], edgecolor='w'))
+            ax_leg.add_patch(Rectangle((i, j), 1, 1,
+                                       facecolor=color_matrix[f"{i}{j}"], edgecolor='w'))
 
     ax_leg.set_xlim(1, 4)
     ax_leg.set_ylim(1, 4)
@@ -164,9 +167,9 @@ def generate_bivariate_map(vehicles_dict):
     return f"data:image/png;base64,{base64.b64encode(buf.getbuffer()).decode()}"
 
 
-# -----------------------------
-# 5. Dash App
-# -----------------------------
+# =============================
+# 6. Dash App
+# =============================
 app = Dash(__name__)
 
 app.layout = html.Div(style={'display': 'flex', 'padding': '20px'}, children=[
@@ -196,6 +199,9 @@ app.layout = html.Div(style={'display': 'flex', 'padding': '20px'}, children=[
 ])
 
 
+# =============================
+# 7. Callback（語意一致版）
+# =============================
 @app.callback(
     [Output('vehicle-count', 'children'),
      Output('deployment-store', 'data'),
@@ -220,14 +226,15 @@ def update_vehicles(up, down, town, store):
 
     store[town] = val
 
-    df = DF_BASE.copy()
-    pop = df[df['area_name'] == town]['pop_65plus'].values[0]
-    base = df[df['area_name'] == town]['doctor_per_10k'].values[0]
+    row = DF_BASE[DF_BASE['area_name'] == town].iloc[0]
+    pop = row['pop_65plus']
+    base = row['doctor_per_10k']
+
     sim = base + (val / (pop / 10000)) if pop > 0 else base
     gap, stage = calc_gap(sim)
 
     if gap > 0:
-        text = f"{town} 已部署 {val} 輛補給車 ｜已接近下一級門檻（尚差 {gap:.1f}）"
+        text = f"{town} 已部署 {val} 輛補給車 ｜距離下一級尚差 {gap:.2f}"
     else:
         text = f"{town} 已達最高醫療資源等級"
 
@@ -243,4 +250,4 @@ def update_map(data):
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=7860, debug=False)
+    app.run_server(host='0.0.0.0', port=7860, debug=False)
