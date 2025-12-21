@@ -4,141 +4,173 @@ import plotly.express as px
 import solara
 import json
 
-# --- 1. 配置與資料來源 ---
+# -----------------------------
+# 資料來源
+# -----------------------------
 TOWNSHIPS_URL = 'https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/changhua.geojson'
 CSV_POPULATION_URL = "https://raw.githubusercontent.com/peijhuuuuu/Changhua_hospital/main/age_population.csv"
 CSV_DOCTOR_URL = "https://raw.githubusercontent.com/chenhao0506/gis_final/main/changhua_doctors_per_10000.csv"
 
-# 狀態管理
-extra_cars = solara.reactive({})
+# -----------------------------
+# 狀態
+# -----------------------------
 selected_town = solara.reactive(None)
+extra_doctors = solara.reactive({})
 
-# 雙變量顏色矩陣
+# 固定的雙變量配色
 COLOR_MATRIX = {
-    '11': '#e8e8e8', '21': '#e4acac', '31': '#c85a5a', 
-    '12': '#b0d5df', '22': '#ad9ea5', '32': '#985356', 
+    '11': '#e8e8e8', '21': '#e4acac', '31': '#c85a5a',
+    '12': '#b0d5df', '22': '#ad9ea5', '32': '#985356',
     '13': '#64acbe', '23': '#627f8c', '33': '#574249'
 }
 
+# -----------------------------
+# 一次性資料處理（原始現況）
+# -----------------------------
+@solara.memoize
+def load_base_data():
+    gdf = gpd.read_file(TOWNSHIPS_URL).to_crs(epsg=4326)
+
+    df_doc = pd.read_csv(CSV_DOCTOR_URL)
+    df_doc = df_doc[df_doc['區域'] != '總計']
+    df_doc = df_doc[['區域', '總計']]
+    df_doc.columns = ['area_name', 'doctor_per_10k']
+    df_doc['doctor_per_10k'] = pd.to_numeric(df_doc['doctor_per_10k'], errors='coerce').fillna(0)
+
+    pop_raw = pd.read_csv(CSV_POPULATION_URL, encoding="big5")
+    pop_raw.columns = [str(c).strip() for c in pop_raw.columns]
+    town_col = pop_raw.columns[0]
+
+    age_cols = [c for c in pop_raw.columns if '歲' in c]
+    for c in age_cols:
+        pop_raw[c] = (
+            pop_raw[c].astype(str)
+            .str.replace(',', '')
+            .replace(['nan', 'None', ''], '0')
+            .astype(float)
+        )
+
+    cols_65 = [c for c in age_cols if any(str(i) in c for i in range(65, 101))]
+    pop_raw['pop_65plus'] = pop_raw[cols_65].sum(axis=1)
+
+    df_pop = pop_raw.groupby(town_col).agg({
+        'pop_65plus': 'sum'
+    }).reset_index()
+    df_pop.columns = ['area_name', 'pop_65plus']
+
+    df = pd.merge(df_pop, df_doc, on='area_name', how='left').fillna(0)
+
+    # 固定分級切點（只算一次）
+    df['v1_bin'] = pd.qcut(df['pop_65plus'].rank(method='first'), 3, labels=['1', '2', '3'])
+    df['v2_bin_base'] = pd.qcut(df['doctor_per_10k'].rank(method='first'), 3, labels=['1', '2', '3'])
+
+    gdf = gdf.merge(df, left_on='townname', right_on='area_name', how='inner')
+    return gdf
+
+
+# -----------------------------
+# 依據互動更新單一鄉鎮
+# -----------------------------
+def apply_policy(gdf):
+    gdf = gdf.copy()
+    gdf['doctor_sim'] = gdf['doctor_per_10k']
+
+    for town, added in extra_doctors.value.items():
+        idx = gdf['townname'] == town
+        if idx.any():
+            pop = gdf.loc[idx, 'pop_65plus'].values[0]
+            if pop > 0:
+                gdf.loc[idx, 'doctor_sim'] += added / (pop / 10000)
+
+    # 使用「原始切點」重新判斷該鄉鎮落在哪一級
+    bins = pd.qcut(
+        gdf['doctor_per_10k'].rank(method='first'),
+        3,
+        retbins=True,
+        labels=['1', '2', '3']
+    )[1]
+
+    def classify(val):
+        if val <= bins[1]:
+            return '1'
+        elif val <= bins[2]:
+            return '2'
+        else:
+            return '3'
+
+    gdf['v2_bin'] = gdf.apply(
+        lambda r: classify(r['doctor_sim'])
+        if r['townname'] in extra_doctors.value
+        else r['v2_bin_base'],
+        axis=1
+    )
+
+    gdf['bi_class'] = gdf['v1_bin'].astype(str) + gdf['v2_bin'].astype(str)
+    gdf['color'] = gdf['bi_class'].map(COLOR_MATRIX)
+    return gdf
+
+
+# -----------------------------
+# 主頁面
+# -----------------------------
 @solara.component
 def Page():
-    # --- 2. 資料處理 (解決碎片化並確保名稱一致) ---
-    def load_and_process(cars_dict):
-        try:
-            # A. 讀取地理資料
-            gdf = gpd.read_file(TOWNSHIPS_URL).to_crs(epsg=4326)
-            
-            # B. 讀取醫師資料
-            df_doc = pd.read_csv(CSV_DOCTOR_URL)
-            df_doc = df_doc[df_doc['區域'] != '總計'].copy()
-            df_doc = df_doc[['區域', '總計']]
-            df_doc.columns = ['town_name', 'base_doctor_rate']
+    base_gdf = load_base_data()
+    gdf = apply_policy(base_gdf)
 
-            # C. 讀取人口資料
-            raw_pop = pd.read_csv(CSV_POPULATION_URL, encoding="big5")
-            df_pop = raw_pop.copy()
-            df_pop.columns = [str(c).strip() for c in df_pop.columns]
-            
-            age_cols = [c for c in df_pop.columns if '歲' in c]
-            for col in age_cols:
-                df_pop[col] = pd.to_numeric(df_pop[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-            
-            df_pop['pop_total'] = df_pop[age_cols].sum(axis=1)
-            cols_65 = [c for c in age_cols if any(str(i) in c for i in range(65, 101))]
-            df_pop['pop_65plus'] = df_pop[cols_65].sum(axis=1)
-            
-            town_col = df_pop.columns[0]
-            pop_stats = df_pop.groupby(town_col).agg({'pop_total':'sum', 'pop_65plus':'sum'}).reset_index()
-            pop_stats.columns = ['area_name', 'pop_total', 'pop_65plus']
+    geojson = json.loads(gdf.to_json())
 
-            # D. 資料合併
-            df_merged = pd.merge(pop_stats, df_doc, left_on='area_name', right_on='town_name', how='inner')
-            
-            # 醫師密度模擬計算
-            def calculate_new_rate(row):
-                added = cars_dict.get(row['area_name'], 0)
-                bonus = (added / (row['pop_total'] / 10000)) if row['pop_total'] > 0 else 0
-                return row['base_doctor_rate'] + bonus
+    fig = px.choropleth_map(
+        gdf,
+        geojson=geojson,
+        locations="townname",
+        featureidkey="properties.townname",
+        color="bi_class",
+        color_discrete_map=COLOR_MATRIX,
+        map_style="carto-positron",
+        center={"lat": 23.98, "lon": 120.53},
+        zoom=9.3,
+        opacity=0.85,
+        hover_name="townname",
+        custom_data=["townname"]
+    )
 
-            df_merged['current_doctor_rate'] = df_merged.apply(calculate_new_rate, axis=1)
-            
-            # E. 雙變量分級
-            def get_bins(series):
-                return pd.qcut(series.rank(method='first'), 3, labels=['1', '2', '3'])
+    fig.update_layout(
+        margin=dict(r=0, t=0, l=0, b=0),
+        showlegend=False,
+        uirevision="fixed"
+    )
 
-            df_merged['v1_bin'] = get_bins(df_merged['pop_65plus'])
-            df_merged['v2_bin'] = get_bins(df_merged['current_doctor_rate'])
-            df_merged['bi_class'] = df_merged['v1_bin'].astype(str) + df_merged['v2_bin'].astype(str)
-            
-            # F. 與地理資料合併
-            final_gdf = gdf.merge(df_merged, left_on='townname', right_on='area_name', how='inner')
-            return final_gdf
-            
-        except Exception as e:
-            return str(e)
+    def handle_click(data):
+        if not data:
+            return
+        pts = data.get("points", [])
+        if not pts:
+            return
+        town = pts[0].get("customdata", [None])[0]
+        if town:
+            selected_town.value = town
 
-    result_gdf = solara.use_memo(lambda: load_and_process(extra_cars.value), dependencies=[extra_cars.value])
-
-    # --- 3. 介面與 Plotly 渲染 ---
     with solara.Columns([3, 1]):
         with solara.Column():
-            solara.Markdown("### 彰化縣醫療資源動態模擬")
-            
-            if isinstance(result_gdf, str):
-                solara.Error(f"資料錯誤: {result_gdf}")
-            elif not result_gdf.empty:
-                # 準備 GeoJSON
-                geojson_data = json.loads(result_gdf.to_json())
-                
-                # 繪製地圖
-                fig = px.choropleth_map(
-                    result_gdf,
-                    geojson=geojson_data,
-                    locations="townname",      # 使用鄉鎮名稱進行匹配
-                    featureidkey="properties.townname", # 對應 GeoJSON 屬性
-                    color="bi_class",
-                    color_discrete_map=COLOR_MATRIX,
-                    map_style="carto-positron",
-                    center={"lat": 23.98, "lon": 120.53},
-                    zoom=9.3,
-                    opacity=0.8,
-                    hover_name="townname",
-                    custom_data=["townname"]
-                )
-                
-                fig.update_layout(
-                    margin={"r":0,"t":0,"l":0,"b":0},
-                    showlegend=False,
-                    uirevision='constant'
-                )
+            solara.FigurePlotly(fig, on_click=handle_click, on_relayout=None)
 
-                # 點擊處理
-                def handle_click(data):
-                    if data and "points" in data and len(data["points"]) > 0:
-                        clicked_town = data["points"][0].get("customdata", [None])[0]
-                        if clicked_town:
-                            selected_town.value = clicked_town
-
-                solara.FigurePlotly(fig, on_click=handle_click)
-
-        # --- 4. 側邊控制 ---
-        with solara.Column(style={"padding": "20px", "background": "#f8f9fa"}):
-            solara.Markdown("## 資源配置面板")
+        with solara.Column(style={"padding": "20px"}):
             if selected_town.value:
                 town = selected_town.value
-                current = extra_cars.value.get(town, 0)
-                solara.Info(f"選取區域: {town}")
-                
-                def update_count(delta):
-                    new_state = extra_cars.value.copy()
-                    new_state[town] = max(0, current + delta)
-                    extra_cars.value = new_state
+                current = extra_doctors.value.get(town, 0)
 
-                with solara.Row():
-                    solara.Button("增加", on_click=lambda: update_count(1), color="success")
-                    solara.Button("減少", on_click=lambda: update_count(-1), color="error")
-                solara.Markdown(f"**已投入：{current} 台**")
+                solara.Markdown(f"### {town}")
+
+                def update(delta):
+                    d = extra_doctors.value.copy()
+                    d[town] = max(0, current + delta)
+                    extra_doctors.value = d
+
+                solara.Button("增加 1 名醫師", on_click=lambda: update(1))
+                solara.Button("減少 1 名醫師", on_click=lambda: update(-1))
+                solara.Markdown(f"目前投入：**{current} 名**")
             else:
-                solara.Warning("請點擊地圖上的鄉鎮區域")
+                solara.Markdown("請點選地圖中的鄉鎮")
 
 Page()
