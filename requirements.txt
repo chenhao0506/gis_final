@@ -1,7 +1,6 @@
-pandas
+solara
 geopandas
+pandas
 matplotlib
-numpy
-dash
 requests
-pyogrio
+mapclassify
