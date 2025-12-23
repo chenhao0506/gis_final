@@ -21,6 +21,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 5. 複製所有程式碼
 COPY . .
 
-# 6. 修改執行指令 (從 solara 改為 python)
-# 注意：確保您的 app.py 最後有 app.run_server(host='0.0.0.0', port=7860)
-CMD ["python", "app.py"]
+# 6. 告訴 HF 如何執行 (使用 7860 port)
+CMD ["solara", "run", "app.py", "--host", "0.0.0.0", "--port", "7860"]
